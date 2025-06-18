@@ -122,37 +122,52 @@ function installQuestions() {
 	echo "You can leave the default options and just press enter if you are ok with them."
 	echo ""
 
+	# Ask if IPv6 should be enabled
+	while true; do
+		read -rp "Enable IPv6 for this server? [Y/n]: " -e ENABLE_IPV6
+		ENABLE_IPV6=${ENABLE_IPV6,,} # to lowercase
+		if [[ -z "$ENABLE_IPV6" || "$ENABLE_IPV6" == "y" || "$ENABLE_IPV6" == "yes" ]]; then
+			SERVER_ENABLE_IPV6="yes"
+			break
+		elif [[ "$ENABLE_IPV6" == "n" || "$ENABLE_IPV6" == "no" ]]; then
+			SERVER_ENABLE_IPV6="no"
+			break
+		else
+			echo "Please answer yes or no."
+		fi
+	done
+
 	# Detect public IPv4 or IPv6 address and pre-fill for the user
 	SERVER_PUB_IP=$(host myip.opendns.com resolver1.opendns.com | grep -oE 'has address [0-9.]+' | cut -d ' ' -f3)
 	echo "Your public IPv4 address is ${SERVER_PUB_IP}"
 	if [[ -z ${SERVER_PUB_IP} ]]; then
 		# Detect public IPv6 address
 		if [[ ${OS} == "macos" ]]; then
-			# Detect public IPv6 address on macOS
 			SERVER_PUB_IP=$(ifconfig | grep -A4 'en0:' | grep 'inet6' | awk '{print $2}')
 		else
-			# Detect public IPv6 address on Linux
 			SERVER_PUB_IP=$(ip -6 addr | sed -ne 's|^.* inet6 \([^/]*\)/.* scope global.*$|\1|p' | head -1)
 		fi
 	fi
 
-	# while true; do
-	# 	read -rp "Enter IPv4 or IPv6 public address: " -e -i "${SERVER_PUB_IP}" SERVER_PUB_IP
 	while true; do
-    read -rp "Enter IPv4 or IPv6 public address [default used ${SERVER_PUB_IP}]: " -e USER_INPUT_SERVER_PUB_IP
+    read -rp "Enter IPv4, IPv6, or domain name for public address [default used ${SERVER_PUB_IP}]: " -e USER_INPUT_SERVER_PUB_IP
     SERVER_PUB_IP=${USER_INPUT_SERVER_PUB_IP:-$SERVER_PUB_IP}
-		if [[ ${SERVER_PUB_IP} =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-			break
-		elif [[ ${SERVER_PUB_IP} =~ ^[0-9a-fA-F:]+:[0-9a-fA-F:]*$ ]]; then
-			SERVER_PUB_IP="[${SERVER_PUB_IP}]"
-			break
-		else
-			echo "Invalid IP address. Please enter a valid IPv4 or IPv6 address."
-		fi
+    # Validate IPv4
+    if [[ ${SERVER_PUB_IP} =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      break
+    # Validate IPv6
+    elif [[ ${SERVER_PUB_IP} =~ ^[0-9a-fA-F:]+:[0-9a-fA-F:]*$ ]]; then
+      SERVER_PUB_IP="[${SERVER_PUB_IP}]"
+      break
+    # Validate domain name (RFC 1035, basic check)
+    elif [[ ${SERVER_PUB_IP} =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
+      break
+    else
+      echo "Invalid input. Please enter a valid IPv4, IPv6, or domain name."
+    fi
 	done
 
 	until [[ ${SERVER_WG_IPV4} =~ ^([0-9]{1,3}\.){3} ]]; do
-		# read -rp "Server's WireGuard IPv4: " -e -i 10."$(shuf -i 0-250 -n 1)"."$(shuf -i 0-250 -n 1)".1 SERVER_WG_IPV4
 		if [[ ${OS} == "macos" ]]; then
 			SERVER_WG_IPV4="10.$(jot -r 1 0 250).$(jot -r 1 0 250).1"
 			read -rp "Server's WireGuard IPv4 [default used ${SERVER_WG_IPV4}]: " -e USER_INPUT_SERVER_WG_IPV4
@@ -162,21 +177,23 @@ function installQuestions() {
 		fi
 	done
 
-	until [[ ${SERVER_WG_IPV6} =~ ^([a-f0-9]{1,4}:){3,4}: ]]; do
-		# read -rp "Server's WireGuard IPv6: " -e -i fd42:"$(shuf -i 10-90 -n 1)":"$(shuf -i 10-90 -n 1)"::1 SERVER_WG_IPV6
-		if [[ ${OS} == 'macos' ]]; then
-			SERVER_WG_IPV6="fd42:$(jot -r 1 10 90):$(jot -r 1 10 90)::1"
-			read -rp "Server's WireGuard IPv6 [default used ${SERVER_WG_IPV6}]: " -e USER_INPUT_SERVER_WG_IPV6
-			SERVER_WG_IPV6=${USER_INPUT_SERVER_WG_IPV6:-$SERVER_WG_IPV6}
-		else
-			read -rp "Server's WireGuard IPv6: " -e -i fd42:"$(shuf -i 10-90 -n 1)":"$(shuf -i 10-90 -n 1)"::1 SERVER_WG_IPV6
-		fi
-	done
+	# Only ask for IPv6 if enabled
+	if [[ "$SERVER_ENABLE_IPV6" == "yes" ]]; then
+		until [[ ${SERVER_WG_IPV6} =~ ^([a-f0-9]{1,4}:){3,4}: ]]; do
+			if [[ ${OS} == 'macos' ]]; then
+				SERVER_WG_IPV6="fd42:$(jot -r 1 10 90):$(jot -r 1 10 90)::1"
+				read -rp "Server's WireGuard IPv6 [default used ${SERVER_WG_IPV6}]: " -e USER_INPUT_SERVER_WG_IPV6
+				SERVER_WG_IPV6=${USER_INPUT_SERVER_WG_IPV6:-$SERVER_WG_IPV6}
+			else
+				read -rp "Server's WireGuard IPv6: " -e -i fd42:"$(shuf -i 10-90 -n 1)":"$(shuf -i 10-90 -n 1)"::1 SERVER_WG_IPV6
+			fi
+		done
+	else
+		SERVER_WG_IPV6=""
+	fi
 
-	# Generate random number within private ports range
 	RANDOM_PORT=$(shuf -i 49152-65535 -n1)
 	until [[ ${SERVER_PORT} =~ ^[0-9]+$ ]] && [ "${SERVER_PORT}" -ge 1 ] && [ "${SERVER_PORT}" -le 65535 ]; do
-		# read -rp "Server's WireGuard port [1-65535]: " -e -i "${RANDOM_PORT}" SERVER_PORT
 		if [[ ${OS} == 'macos' ]]; then
 			read -rp "Server's WireGuard port [1-65535] [default ${RANDOM_PORT}]: " -e USER_INPUT_SERVER_PORT
 			SERVER_PORT=${USER_INPUT_SERVER_PORT:-$RANDOM_PORT}
@@ -187,7 +204,6 @@ function installQuestions() {
 
 	# Adguard DNS by default
 	until [[ ${CLIENT_DNS_1} =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
-		# read -rp "First DNS resolver to use for the clients: " -e -i 94.140.14.14 CLIENT_DNS_1
 		if [[ ${OS} == 'macos' ]]; then
 			CLIENT_DNS_1='94.140.14.14'
 			read -rp "First DNS resolver to use for the clients [default ${CLIENT_DNS_1}]: " -e USER_INPUT_CLIENT_DNS_1
@@ -227,10 +243,10 @@ function newInterface() {
 
 	# Save WireGuard settings #SERVER_PUB_NIC=${SERVER_PUB_NIC}
 	echo "SERVER_PUB_IP=${SERVER_PUB_IP}
-
 SERVER_WG_NIC=${SERVER_WG_NIC}
 SERVER_WG_IPV4=${SERVER_WG_IPV4}
 SERVER_WG_IPV6=${SERVER_WG_IPV6}
+SERVER_ENABLE_IPV6=${SERVER_ENABLE_IPV6}
 SERVER_PORT=${SERVER_PORT}
 SERVER_PRIV_KEY=${SERVER_PRIV_KEY}
 SERVER_PUB_KEY=${SERVER_PUB_KEY}
@@ -238,28 +254,41 @@ CLIENT_DNS_1=${CLIENT_DNS_1}
 CLIENT_DNS_2=${CLIENT_DNS_2}" > "$(pwd)/wireguard/${SERVER_WG_NIC}/params"
 
     # Save WireGuard settings to the MikroTik
-    echo "# WireGuard interface configure
+    cat > "$(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc" <<EOF
+# WireGuard interface configure
 /interface wireguard
-add listen-port=${SERVER_PORT} mtu=1420 name=${SERVER_WG_NIC} private-key=\\
-    \"${SERVER_PRIV_KEY}\"
+add listen-port=${SERVER_PORT} mtu=1420 name=${SERVER_WG_NIC} private-key="${SERVER_PRIV_KEY}"
 /ip firewall filter
 add action=accept chain=input comment=wg-${SERVER_WG_NIC} dst-port=${SERVER_PORT} protocol=udp
 /ip firewall filter move [/ip firewall filter find comment=wg-${SERVER_WG_NIC}] 1
 /ip address
 add address=${SERVER_WG_IPV4}/24 comment=wg-${SERVER_WG_NIC} interface=${SERVER_WG_NIC}
-    " > "$(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc"
+EOF
 
+    # Add IPv6 address to MikroTik config if enabled
+    if [[ "$SERVER_ENABLE_IPV6" == "yes" && -n "$SERVER_WG_IPV6" ]]; then
+        cat >> "$(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc" <<EOF
+/ipv6 address
+add address=${SERVER_WG_IPV6}/64 comment=wg-${SERVER_WG_NIC} interface=${SERVER_WG_NIC}
+EOF
+    fi
 
 	# Add server interface
-	echo "[Interface]
+	if [[ "$SERVER_ENABLE_IPV6" == "yes" ]]; then
+		echo "[Interface]
 Address = ${SERVER_WG_IPV4}/24,${SERVER_WG_IPV6}/64
 ListenPort = ${SERVER_PORT}
 PrivateKey = ${SERVER_PRIV_KEY}" > "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf"
+	else
+		echo "[Interface]
+Address = ${SERVER_WG_IPV4}/24
+ListenPort = ${SERVER_PORT}
+PrivateKey = ${SERVER_PRIV_KEY}" > "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf"
+	fi
 
 	newClient
 	echo -e "${INFO} MikroTik interface config available in $(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc"
 	echo -e "${INFO} If you want to add more clients, you simply need to run this script another time!"
-
 }
 
 function newClient() {
@@ -315,23 +344,28 @@ function newClient() {
 		fi
 	done
 
-	BASE_IP=$(echo "$SERVER_WG_IPV6" | awk -F '::' '{ print $1 }')
-	until [[ ${IPV6_EXISTS} == '0' ]]; do
-		if [[ ${OS} == 'macos' ]]; then
-			read -rp "Client's WireGuard IPv6 [default used ${BASE_IP}::${DOT_IP}]: " -e USER_INPUT_DOT_IP
-			DOT_IP=${USER_INPUT_DOT_IP:-$DOT_IP}
-		else
-			read -rp "Client's WireGuard IPv6: ${BASE_IP}::" -e -i "${DOT_IP}" DOT_IP
-		fi
-		CLIENT_WG_IPV6="${BASE_IP}::${DOT_IP}"
-		IPV6_EXISTS=$(grep -c "${CLIENT_WG_IPV6}/64" "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf")
+	# Only ask for IPv6 if enabled
+	if [[ "$SERVER_ENABLE_IPV6" == "yes" ]]; then
+		BASE_IP=$(echo "$SERVER_WG_IPV6" | awk -F '::' '{ print $1 }')
+		until [[ ${IPV6_EXISTS} == '0' ]]; do
+			if [[ ${OS} == 'macos' ]]; then
+				read -rp "Client's WireGuard IPv6 [default used ${BASE_IP}::${DOT_IP}]: " -e USER_INPUT_DOT_IP
+				DOT_IP=${USER_INPUT_DOT_IP:-$DOT_IP}
+			else
+				read -rp "Client's WireGuard IPv6: ${BASE_IP}::" -e -i "${DOT_IP}" DOT_IP
+			fi
+			CLIENT_WG_IPV6="${BASE_IP}::${DOT_IP}"
+			IPV6_EXISTS=$(grep -c "${CLIENT_WG_IPV6}/64" "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf")
 
-		if [[ ${IPV6_EXISTS} == '1' ]]; then
-			echo ""
-			echo "A client with the specified IPv6 was already created, please choose another IPv6."
-			echo ""
-		fi
-	done
+			if [[ ${IPV6_EXISTS} == '1' ]]; then
+				echo ""
+				echo "A client with the specified IPv6 was already created, please choose another IPv6."
+				echo ""
+			fi
+		done
+	else
+		CLIENT_WG_IPV6=""
+	fi
 
 	# Asking for client's allowed IPs
 	until [[ ${ALLOWED_IPV4} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(\/([0-9]|[1-2][0-9]|3[0-2]))?$ ]]; do
@@ -344,15 +378,20 @@ function newClient() {
 		fi
 	done
 
-	until [[ ${ALLOWED_IPV6} =~ ^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))(\/((1(1[0-9]|2[0-8]))|([0-9][0-9])|([0-9])))?$ ]]; do
-		if [[ ${OS} == 'macos' ]]; then
-			ALLOWED_IPV6="::/0"
-			read -rp "Client's allowed IPv6 [default used ${ALLOWED_IPV6}]: " -e USER_INPUT_ALLOWED_IPV6
-			ALLOWED_IPV6=${USER_INPUT_ALLOWED_IPV6:-$ALLOWED_IPV6}
-		else
-			read -rp "Client's allowed IPv6: " -e -i "::/0" ALLOWED_IPV6
-		fi
-	done
+	# Only ask for IPv6 allowed IPs if enabled
+	if [[ "$SERVER_ENABLE_IPV6" == "yes" && -n "$SERVER_WG_IPV6" ]]; then
+		until [[ ${ALLOWED_IPV6} =~ ^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))(\/(\(1(1[0-9]|2[0-8])\)|([0-9][0-9])|([0-9])))?$ ]]; do
+			if [[ ${OS} == 'macos' ]]; then
+				ALLOWED_IPV6="::/0"
+				read -rp "Client's allowed IPv6 [default used ${ALLOWED_IPV6}]: " -e USER_INPUT_ALLOWED_IPV6
+				ALLOWED_IPV6=${USER_INPUT_ALLOWED_IPV6:-$ALLOWED_IPV6}
+			else
+				read -rp "Client's allowed IPv6: " -e -i "::/0" ALLOWED_IPV6
+			fi
+		done
+	else
+		ALLOWED_IPV6=""
+	fi
 
 	# Generate key pair for the client
 	CLIENT_PRIV_KEY=$(wg genkey)
@@ -363,7 +402,8 @@ function newClient() {
 	HOME_DIR="$(pwd)/wireguard/${SERVER_WG_NIC}/client/${CLIENT_NAME}"
 
 	# Create client file and add the server as a peer
-	echo "[Interface]
+	if [[ "$SERVER_ENABLE_IPV6" == "yes" && -n "$CLIENT_WG_IPV6" ]]; then
+		echo "[Interface]
 PrivateKey = ${CLIENT_PRIV_KEY}
 Address = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128
 DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
@@ -373,6 +413,18 @@ PublicKey = ${SERVER_PUB_KEY}
 PresharedKey = ${CLIENT_PRE_SHARED_KEY}
 Endpoint = ${ENDPOINT}
 AllowedIPs = ${ALLOWED_IPV4},${ALLOWED_IPV6}" >>"${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
+	else
+		echo "[Interface]
+PrivateKey = ${CLIENT_PRIV_KEY}
+Address = ${CLIENT_WG_IPV4}/32
+DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
+
+[Peer]
+PublicKey = ${SERVER_PUB_KEY}
+PresharedKey = ${CLIENT_PRE_SHARED_KEY}
+Endpoint = ${ENDPOINT}
+AllowedIPs = ${ALLOWED_IPV4}" >>"${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
+	fi
 
     # Add the client as a peer to the MikroTik (to client folder)
     echo "# WireGuard client peer configure
@@ -393,11 +445,19 @@ add allowed-address=${CLIENT_WG_IPV4}/32 comment=\\
     " >> "$(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc"
 
 	# Add the client as a peer to the server
-	echo -e "\n### Client ${CLIENT_NAME}
+	if [[ "$SERVER_ENABLE_IPV6" == "yes" && -n "$CLIENT_WG_IPV6" ]]; then
+		echo -e "\n### Client ${CLIENT_NAME}
 [Peer]
 PublicKey = ${CLIENT_PUB_KEY}
 PresharedKey = ${CLIENT_PRE_SHARED_KEY}
 AllowedIPs = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128" >>"$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf"
+	else
+		echo -e "\n### Client ${CLIENT_NAME}
+[Peer]
+PublicKey = ${CLIENT_PUB_KEY}
+PresharedKey = ${CLIENT_PRE_SHARED_KEY}
+AllowedIPs = ${CLIENT_WG_IPV4}/32" >>"$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf"
+	fi
 
 	echo -e "\nHere is your client config file as a QR Code:"
 
@@ -408,7 +468,6 @@ AllowedIPs = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128" >>"$(pwd)/wireguard/${S
 	echo -e "${INFO} QR is also available in ${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.png"
 	echo -e "${INFO} MikroTik peer config available in ${HOME_DIR}/mikrotik-${SERVER_WG_NIC}-client-${CLIENT_NAME}.rsc"
 }
-
 function manageMenu() {
 	echo ""
 	echo "It looks like this WireGuard interface is already."
