@@ -110,10 +110,13 @@ function installCheck() {
 }
 
 function serverName() {
-	until [[ ${SERVER_WG_NIC} =~ ^[a-zA-Z0-9_]+$ && ${#SERVER_WG_NIC} -lt 16 ]]; do
-			echo "Tell me a name for the server WireGuard interface. ('wg0' is used by default)"
-			read -rp "WireGuard interface name (server name): " -e SERVER_WG_NIC
-			SERVER_WG_NIC=${SERVER_WG_NIC:-wg0}
+    until [[ ${SERVER_WG_NIC} =~ ^[a-zA-Z0-9_]+$ && ${#SERVER_WG_NIC} -lt 16 && ! ${SERVER_WG_NIC} =~ - ]]; do
+        echo "Tell me a name for the server WireGuard interface. ('wg0' is used by default, no '-' allowed)"
+        read -rp "WireGuard interface name (server name): " -e SERVER_WG_NIC
+        SERVER_WG_NIC=${SERVER_WG_NIC:-wg0}
+        if [[ ${SERVER_WG_NIC} =~ - ]]; then
+            echo "Server name must not contain '-' characters."
+        fi
     done
 }
 
@@ -257,19 +260,19 @@ CLIENT_DNS_2=${CLIENT_DNS_2}" > "$(pwd)/wireguard/${SERVER_WG_NIC}/params"
     cat > "$(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc" <<EOF
 # WireGuard interface configure
 /interface wireguard
-add listen-port=${SERVER_PORT} mtu=1420 name=${SERVER_WG_NIC} private-key="${SERVER_PRIV_KEY}"
+add listen-port=${SERVER_PORT} mtu=1420 name=${SERVER_WG_NIC} private-key="${SERVER_PRIV_KEY}" comment=wg-mikrotik-${SERVER_WG_NIC}-interface
 /ip firewall filter
-add action=accept chain=input comment=wg-${SERVER_WG_NIC} dst-port=${SERVER_PORT} protocol=udp
-/ip firewall filter move [/ip firewall filter find comment=wg-${SERVER_WG_NIC}] 1
+add action=accept chain=input comment=wg-mikrotik-${SERVER_WG_NIC}-interface dst-port=${SERVER_PORT} protocol=udp
+/ip firewall filter move [/ip firewall filter find comment=wg-mikrotik-${SERVER_WG_NIC}-interface] 1
 /ip address
-add address=${SERVER_WG_IPV4}/24 comment=wg-${SERVER_WG_NIC} interface=${SERVER_WG_NIC}
+add address=${SERVER_WG_IPV4}/24 comment=wg-mikrotik-${SERVER_WG_NIC}-interface interface=${SERVER_WG_NIC}
 EOF
 
     # Add IPv6 address to MikroTik config if enabled
     if [[ "$SERVER_ENABLE_IPV6" == "yes" && -n "$SERVER_WG_IPV6" ]]; then
         cat >> "$(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc" <<EOF
 /ipv6 address
-add address=${SERVER_WG_IPV6}/64 comment=wg-${SERVER_WG_NIC} interface=${SERVER_WG_NIC}
+add address=${SERVER_WG_IPV6}/64 comment=wg-mikrotik-${SERVER_WG_NIC}-interface interface=${SERVER_WG_NIC}
 EOF
     fi
 
@@ -289,25 +292,38 @@ PrivateKey = ${SERVER_PRIV_KEY}" > "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_W
 	newClient
 	echo -e "${INFO} MikroTik interface config available in $(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc"
 	echo -e "${INFO} If you want to add more clients, you simply need to run this script another time!"
+
+    # Generate purge script for this server (robust, correct MikroTik syntax)
+    PURGE_SCRIPT_PATH="$(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/purge-wg-mikrotik-${SERVER_WG_NIC}.rsc"
+    cat > "$PURGE_SCRIPT_PATH" <<EOF
+# purge-wg-mikrotik-${SERVER_WG_NIC}.rsc
+# This script will remove all rules with the comment prefix 'wg-mikrotik-${SERVER_WG_NIC}' from the MikroTik router
+
+/interface wireguard remove [find where comment~"^wg-mikrotik-${SERVER_WG_NIC}"]
+/interface wireguard peers remove [find where comment~"^wg-mikrotik-${SERVER_WG_NIC}"]
+/ip firewall filter remove [find where comment~"^wg-mikrotik-${SERVER_WG_NIC}"]
+/ip address remove [find where comment~"^wg-mikrotik-${SERVER_WG_NIC}"]
+/ipv6 address remove [find where comment~"^wg-mikrotik-${SERVER_WG_NIC}"]
+EOF
 }
 
 function newClient() {
-	ENDPOINT="${SERVER_PUB_IP}:${SERVER_PORT}"
+    ENDPOINT="${SERVER_PUB_IP}:${SERVER_PORT}"
 
-	echo ""
-	echo "Tell me a name for the client."
-	echo "The name must consist of alphanumeric character. It may also include an underscore or a dash and can't exceed 15 chars."
+    echo ""
+    echo "Tell me a name for the client."
+    echo "The name must consist of alphanumeric character. It may also include an underscore or a dash and can't exceed 15 chars."
 
-	until [[ ${CLIENT_NAME} =~ ^[a-zA-Z0-9_-]+$ && ${CLIENT_EXISTS} == '0' && ${#CLIENT_NAME} -lt 16 ]]; do
-		read -rp "Client name: " -e CLIENT_NAME
-		CLIENT_EXISTS=$(grep -c -E "^### Client ${CLIENT_NAME}\$" "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf")
+    until [[ ${CLIENT_NAME} =~ ^[a-zA-Z0-9_-]+$ && ${CLIENT_EXISTS} == '0' && ${#CLIENT_NAME} -lt 16 ]]; do
+        read -rp "Client name: " -e CLIENT_NAME
+        CLIENT_EXISTS=$(grep -c -E "^### Client ${CLIENT_NAME}$" "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf")
 
-		if [[ ${CLIENT_EXISTS} == '1' ]]; then
-			echo ""
-			echo "A client with the specified name was already created, please choose another name."
-			echo ""
-		fi
-	done
+        if [[ ${CLIENT_EXISTS} == '1' ]]; then
+            echo ""
+            echo "A client with the specified name was already created, please choose another name."
+            echo ""
+        fi
+    done
 
 	for DOT_IP in {2..254}; do
 		if [[ ${OS} == 'macos' ]]; then
@@ -400,10 +416,12 @@ function newClient() {
 
     mkdir -p "$(pwd)/wireguard/${SERVER_WG_NIC}/client/${CLIENT_NAME}" >/dev/null 2>&1
 	HOME_DIR="$(pwd)/wireguard/${SERVER_WG_NIC}/client/${CLIENT_NAME}"
+    CLIENT_CONF_NAME="${SERVER_WG_NIC}.conf"
+    CLIENT_PNG_NAME="${SERVER_WG_NIC}.png"
 
-	# Create client file and add the server as a peer
-	if [[ "$SERVER_ENABLE_IPV6" == "yes" && -n "$CLIENT_WG_IPV6" ]]; then
-		echo "[Interface]
+    # Create client file and add the server as a peer
+    if [[ "$SERVER_ENABLE_IPV6" == "yes" && -n "$CLIENT_WG_IPV6" ]]; then
+        echo "[Interface]
 PrivateKey = ${CLIENT_PRIV_KEY}
 Address = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128
 DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
@@ -412,9 +430,9 @@ DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
 PublicKey = ${SERVER_PUB_KEY}
 PresharedKey = ${CLIENT_PRE_SHARED_KEY}
 Endpoint = ${ENDPOINT}
-AllowedIPs = ${ALLOWED_IPV4},${ALLOWED_IPV6}" >>"${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
-	else
-		echo "[Interface]
+AllowedIPs = ${ALLOWED_IPV4},${ALLOWED_IPV6}" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
+    else
+        echo "[Interface]
 PrivateKey = ${CLIENT_PRIV_KEY}
 Address = ${CLIENT_WG_IPV4}/32
 DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
@@ -423,28 +441,29 @@ DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
 PublicKey = ${SERVER_PUB_KEY}
 PresharedKey = ${CLIENT_PRE_SHARED_KEY}
 Endpoint = ${ENDPOINT}
-AllowedIPs = ${ALLOWED_IPV4}" >>"${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
-	fi
+AllowedIPs = ${ALLOWED_IPV4}" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
+    fi
+
+    qrencode -t ansiutf8 -l L <"${HOME_DIR}/${CLIENT_CONF_NAME}"
+    qrencode -l L -s 6 -d 225 -o "${HOME_DIR}/${CLIENT_PNG_NAME}" <"${HOME_DIR}/${CLIENT_CONF_NAME}"
 
     # Add the client as a peer to the MikroTik (to client folder)
     echo "# WireGuard client peer configure
 /interface wireguard peers
-add allowed-address=${CLIENT_WG_IPV4}/32 comment=\\
-    ${SERVER_WG_NIC}-client-${CLIENT_NAME} interface=${SERVER_WG_NIC} \\
-    preshared-key=\"${CLIENT_PRE_SHARED_KEY}\" public-key=\\
+add allowed-address=${CLIENT_WG_IPV4}/32 comment=wg-mikrotik-${SERVER_WG_NIC}-${CLIENT_NAME} interface=${SERVER_WG_NIC} \
+    preshared-key=\"${CLIENT_PRE_SHARED_KEY}\" public-key=\
     \"${CLIENT_PUB_KEY}\"
     " >"${HOME_DIR}/mikrotik-peer-${SERVER_WG_NIC}-client-${CLIENT_NAME}.rsc"
 
     # Add the client as a peer to the MikroTik
     echo "# WireGuard client peer configure
 /interface wireguard peers
-add allowed-address=${CLIENT_WG_IPV4}/32 comment=\\
-    ${SERVER_WG_NIC}-client-${CLIENT_NAME} interface=${SERVER_WG_NIC} \\
-    preshared-key=\"${CLIENT_PRE_SHARED_KEY}\" public-key=\\
+add allowed-address=${CLIENT_WG_IPV4}/32 comment=wg-mikrotik-${SERVER_WG_NIC}-${CLIENT_NAME} interface=${SERVER_WG_NIC} \
+    preshared-key=\"${CLIENT_PRE_SHARED_KEY}\" public-key=\
     \"${CLIENT_PUB_KEY}\"
     " >> "$(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc"
 
-	# Add the client as a peer to the server
+    # Add the client as a peer to the server
 	if [[ "$SERVER_ENABLE_IPV6" == "yes" && -n "$CLIENT_WG_IPV6" ]]; then
 		echo -e "\n### Client ${CLIENT_NAME}
 [Peer]
@@ -461,11 +480,11 @@ AllowedIPs = ${CLIENT_WG_IPV4}/32" >>"$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER
 
 	echo -e "\nHere is your client config file as a QR Code:"
 
-	qrencode -t ansiutf8 -l L <"${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
-	qrencode -l L -s 6 -d 225 -o "${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.png" <"${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
+	qrencode -t ansiutf8 -l L <"${HOME_DIR}/${CLIENT_CONF_NAME}"
+	qrencode -l L -s 6 -d 225 -o "${HOME_DIR}/${CLIENT_PNG_NAME}" <"${HOME_DIR}/${CLIENT_CONF_NAME}"
 
-	echo -e "${INFO} Config available in ${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
-	echo -e "${INFO} QR is also available in ${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.png"
+	echo -e "${INFO} Config available in ${HOME_DIR}/${CLIENT_CONF_NAME}"
+	echo -e "${INFO} QR is also available in ${HOME_DIR}/${CLIENT_PNG_NAME}"
 	echo -e "${INFO} MikroTik peer config available in ${HOME_DIR}/mikrotik-${SERVER_WG_NIC}-client-${CLIENT_NAME}.rsc"
 }
 function manageMenu() {
