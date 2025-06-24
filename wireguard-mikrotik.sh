@@ -170,13 +170,15 @@ function installQuestions() {
     fi
 	done
 
-	until [[ ${SERVER_WG_IPV4} =~ ^([0-9]{1,3}\.){3} ]]; do
-		if [[ ${OS} == "macos" ]]; then
-			SERVER_WG_IPV4="10.$(jot -r 1 0 250).$(jot -r 1 0 250).1"
-			read -rp "Server's WireGuard IPv4 [default used ${SERVER_WG_IPV4}]: " -e USER_INPUT_SERVER_WG_IPV4
-			SERVER_WG_IPV4=${USER_INPUT_SERVER_WG_IPV4:-$SERVER_WG_IPV4}
+	# Ask for server's WireGuard IPv4 and subnet
+	while true; do
+		read -rp "Enter the server's WireGuard IPv4 address with subnet (e.g. 192.168.10.254/23): " -e SERVER_WG_IPV4_CIDR
+		if [[ $SERVER_WG_IPV4_CIDR =~ ^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\/(3[0-2]|[12]?[0-9])$ ]]; then
+			SERVER_WG_IPV4="${SERVER_WG_IPV4_CIDR%/*}"
+			SERVER_WG_SUBNET="${SERVER_WG_IPV4_CIDR#*/}"
+			break
 		else
-			read -rp "Server's WireGuard IPv4: " -e -i 10."$(shuf -i 0-250 -n 1)"."$(shuf -i 0-250 -n 1)".1 SERVER_WG_IPV4
+			echo "Invalid format. Please enter in the form x.x.x.x/yy, with a valid IPv4 and subnet 0-32."
 		fi
 	done
 
@@ -248,6 +250,7 @@ function newInterface() {
 	echo "SERVER_PUB_IP=${SERVER_PUB_IP}
 SERVER_WG_NIC=${SERVER_WG_NIC}
 SERVER_WG_IPV4=${SERVER_WG_IPV4}
+SERVER_WG_SUBNET=${SERVER_WG_SUBNET}
 SERVER_WG_IPV6=${SERVER_WG_IPV6}
 SERVER_ENABLE_IPV6=${SERVER_ENABLE_IPV6}
 SERVER_PORT=${SERVER_PORT}
@@ -265,7 +268,7 @@ add listen-port=${SERVER_PORT} mtu=1420 name=${SERVER_WG_NIC} private-key="${SER
 add action=accept chain=input comment=wg-mikrotik-${SERVER_WG_NIC}-interface dst-port=${SERVER_PORT} protocol=udp
 /ip firewall filter move [/ip firewall filter find comment=wg-mikrotik-${SERVER_WG_NIC}-interface] 1
 /ip address
-add address=${SERVER_WG_IPV4}/24 comment=wg-mikrotik-${SERVER_WG_NIC}-interface interface=${SERVER_WG_NIC}
+add address=${SERVER_WG_IPV4}/${SERVER_WG_SUBNET} comment=wg-mikrotik-${SERVER_WG_NIC}-interface interface=${SERVER_WG_NIC}
 EOF
 
     # Add IPv6 address to MikroTik config if enabled
@@ -279,12 +282,12 @@ EOF
 	# Add server interface
 	if [[ "$SERVER_ENABLE_IPV6" == "yes" ]]; then
 		echo "[Interface]
-Address = ${SERVER_WG_IPV4}/24,${SERVER_WG_IPV6}/64
+Address = ${SERVER_WG_IPV4}/${SERVER_WG_SUBNET},${SERVER_WG_IPV6}/64
 ListenPort = ${SERVER_PORT}
 PrivateKey = ${SERVER_PRIV_KEY}" > "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf"
 	else
 		echo "[Interface]
-Address = ${SERVER_WG_IPV4}/24
+Address = ${SERVER_WG_IPV4}/${SERVER_WG_SUBNET}
 ListenPort = ${SERVER_PORT}
 PrivateKey = ${SERVER_PRIV_KEY}" > "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf"
 	fi
@@ -336,11 +339,20 @@ function newClient() {
 		fi
 	done
 
+    # Calculate network and broadcast for the subnet
+    IFS=. read -r o1 o2 o3 o4 <<< "$SERVER_WG_IPV4"
+    NETMASK=$(( 0xFFFFFFFF << (32 - SERVER_WG_SUBNET) & 0xFFFFFFFF ))
+    IPINT=$(( (o1 << 24) + (o2 << 16) + (o3 << 8) + o4 ))
+    NETINT=$(( IPINT & NETMASK ))
+    BROADCASTINT=$(( NETINT | (0xFFFFFFFF >> SERVER_WG_SUBNET) ))
+    SERVERINT=$IPINT
+    TOTAL_HOSTS=$(( BROADCASTINT - NETINT - 1 ))
+
 	if [[ ${DOT_EXISTS} == '1' ]]; then
-		echo ""
-		echo "The subnet configured supports only 253 clients."
-		exit 99
-	fi
+        echo ""
+        echo "The subnet ${SERVER_WG_IPV4}/${SERVER_WG_SUBNET} supports only ${TOTAL_HOSTS} clients (excluding network, broadcast, and server IP)."
+        exit 99
+    fi
 
 	BASE_IP=$(echo "$SERVER_WG_IPV4" | awk -F '.' '{ print $1"."$2"."$3 }')
 	until [[ ${IPV4_EXISTS} == '0' ]]; do
@@ -350,7 +362,32 @@ function newClient() {
 		else
 			read -rp "Client's WireGuard IPv4: ${BASE_IP}." -e -i "${DOT_IP}" DOT_IP
 		fi
+
+		if ! [[ ${DOT_IP} =~ ^[0-9]+$ && ${DOT_IP} -ge 2 && ${DOT_IP} -le 254 ]]; then
+			echo ""
+			echo "Invalid IPv4 address. The last octet must be between 2 and 254."
+			echo ""
+			continue
+		fi
+
 		CLIENT_WG_IPV4="${BASE_IP}.${DOT_IP}"
+
+		if ! [[ ${CLIENT_WG_IPV4} =~ ^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$ ]]; then
+            echo ""
+            echo "Invalid IPv4 address format. Please enter a valid IPv4 address in the subnet ${SERVER_WG_IPV4}/${SERVER_WG_SUBNET}."
+            echo ""
+            continue
+        fi
+        CLIENTINT=$(ip_to_int "$CLIENT_WG_IPV4")
+        if (( CLIENTINT <= NETINT || CLIENTINT >= BROADCASTINT )); then
+            echo "Client IP must be inside the subnet ${SERVER_WG_IPV4}/${SERVER_WG_SUBNET} and not the network or broadcast address."
+            continue
+        fi
+        if (( CLIENTINT == SERVERINT )); then
+            echo "Client IP must not be the same as the server IP (${SERVER_WG_IPV4})."
+            continue
+        fi
+
 		IPV4_EXISTS=$(grep -c "$CLIENT_WG_IPV4/24" "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf")
 
 		if [[ ${IPV4_EXISTS} == '1' ]]; then
@@ -363,14 +400,31 @@ function newClient() {
 	# Only ask for IPv6 if enabled
 	if [[ "$SERVER_ENABLE_IPV6" == "yes" ]]; then
 		BASE_IP=$(echo "$SERVER_WG_IPV6" | awk -F '::' '{ print $1 }')
-		until [[ ${IPV6_EXISTS} == '0' ]]; do
+		until [[ ${IPV6_EXISTS} == '0' && ${DOT_IP} =~ ^[0-9a-fA-F]+$ ]]; do
 			if [[ ${OS} == 'macos' ]]; then
 				read -rp "Client's WireGuard IPv6 [default used ${BASE_IP}::${DOT_IP}]: " -e USER_INPUT_DOT_IP
 				DOT_IP=${USER_INPUT_DOT_IP:-$DOT_IP}
 			else
 				read -rp "Client's WireGuard IPv6: ${BASE_IP}::" -e -i "${DOT_IP}" DOT_IP
 			fi
+
+			if ! [[ ${DOT_IP} =~ ^[0-9a-fA-F]+$ ]]; then
+				echo ""
+				echo "Invalid IPv6 address. Must be a hexadecimal number."
+				echo ""
+				continue
+			fi
+
 			CLIENT_WG_IPV6="${BASE_IP}::${DOT_IP}"
+
+			# Validate complete IPv6 address format
+			if ! [[ ${CLIENT_WG_IPV6} =~ ^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$ ]]; then
+				echo ""
+				echo "Invalid IPv6 address format."
+				echo ""
+				continue
+			fi
+
 			IPV6_EXISTS=$(grep -c "${CLIENT_WG_IPV6}/64" "$(pwd)/wireguard/${SERVER_WG_NIC}/${SERVER_WG_NIC}.conf")
 
 			if [[ ${IPV6_EXISTS} == '1' ]]; then
@@ -384,7 +438,7 @@ function newClient() {
 	fi
 
 	# Asking for client's allowed IPs
-	until [[ ${ALLOWED_IPV4} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(\/([0-9]|[1-2][0-9]|3[0-2]))?$ ]]; do
+	until [[ ${ALLOWED_IPV4} =~ ^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\/(3[0-2]|[12]?[0-9]))?$ ]]; do
 		if [[ ${OS} == 'macos' ]]; then
 			ALLOWED_IPV4="0.0.0.0/0"
 			read -rp "Client's allowed IPv4 [default used ${ALLOWED_IPV4}]: " -e USER_INPUT_ALLOWED_IPV4
