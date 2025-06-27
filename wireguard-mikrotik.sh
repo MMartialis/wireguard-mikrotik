@@ -4,6 +4,13 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 INFO="${BLUE}[i]${NC}"
 
+# Converts an IPv4 address to an integer
+function ip_to_int() {
+    local a b c d
+    IFS=. read -r a b c d <<< "$1"
+    echo $(( (a << 24) + (b << 16) + (c << 8) + d ))
+}
+
 function checkOS() {
 
 	#? Check OS version
@@ -484,7 +491,8 @@ DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
 PublicKey = ${SERVER_PUB_KEY}
 PresharedKey = ${CLIENT_PRE_SHARED_KEY}
 Endpoint = ${ENDPOINT}
-AllowedIPs = ${ALLOWED_IPV4},${ALLOWED_IPV6}" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
+AllowedIPs = ${ALLOWED_IPV4},${ALLOWED_IPV6}
+PersistentKeepalive = 25" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
     else
         echo "[Interface]
 PrivateKey = ${CLIENT_PRIV_KEY}
@@ -495,7 +503,8 @@ DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
 PublicKey = ${SERVER_PUB_KEY}
 PresharedKey = ${CLIENT_PRE_SHARED_KEY}
 Endpoint = ${ENDPOINT}
-AllowedIPs = ${ALLOWED_IPV4}" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
+AllowedIPs = ${ALLOWED_IPV4}
+PersistentKeepalive = 25" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
     fi
 
     qrencode -t ansiutf8 -l L <"${HOME_DIR}/${CLIENT_CONF_NAME}"
@@ -505,16 +514,14 @@ AllowedIPs = ${ALLOWED_IPV4}" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
     echo "# WireGuard client peer configure
 /interface wireguard peers
 add allowed-address=${CLIENT_WG_IPV4}/32 comment=wg-mikrotik-${SERVER_WG_NIC}-${CLIENT_NAME} interface=${SERVER_WG_NIC} \
-    preshared-key=\"${CLIENT_PRE_SHARED_KEY}\" public-key=\
-    \"${CLIENT_PUB_KEY}\"
+    preshared-key=\"${CLIENT_PRE_SHARED_KEY}\" public-key=\"${CLIENT_PUB_KEY}\"
     " >"${HOME_DIR}/mikrotik-peer-${SERVER_WG_NIC}-client-${CLIENT_NAME}.rsc"
 
     # Add the client as a peer to the MikroTik
     echo "# WireGuard client peer configure
 /interface wireguard peers
 add allowed-address=${CLIENT_WG_IPV4}/32 comment=wg-mikrotik-${SERVER_WG_NIC}-${CLIENT_NAME} interface=${SERVER_WG_NIC} \
-    preshared-key=\"${CLIENT_PRE_SHARED_KEY}\" public-key=\
-    \"${CLIENT_PUB_KEY}\"
+    preshared-key=\"${CLIENT_PRE_SHARED_KEY}\" public-key=\"${CLIENT_PUB_KEY}\" persistent-keepalive=25
     " >> "$(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc"
 
     # Add the client as a peer to the server
