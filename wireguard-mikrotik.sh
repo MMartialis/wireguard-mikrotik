@@ -214,28 +214,51 @@ function installQuestions() {
 		fi
 	done
 
-	# Adguard DNS by default
-	until [[ ${CLIENT_DNS_1} =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
-		if [[ ${OS} == 'macos' ]]; then
-			CLIENT_DNS_1='94.140.14.14'
-			read -rp "First DNS resolver to use for the clients [default ${CLIENT_DNS_1}]: " -e USER_INPUT_CLIENT_DNS_1
-			CLIENT_DNS_1=${USER_INPUT_CLIENT_DNS_1:-$CLIENT_DNS_1}
-		else
-			read -rp "First DNS resolver to use for the clients: " -e -i 94.140.14.14 CLIENT_DNS_1
-		fi
-	done
-	until [[ ${CLIENT_DNS_2} =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
-		if [[ ${OS} == 'macos' ]]; then
-			CLIENT_DNS_DEF_2='94.140.15.15'
-			read -rp "Second DNS resolver to use for the clients (optional) [default ${CLIENT_DNS_DEF_2}]: " -e USER_INPUT_CLIENT_DNS_2
-			CLIENT_DNS_2=${USER_INPUT_CLIENT_DNS_2:-$CLIENT_DNS_DEF_2}
-		else
-			read -rp "Second DNS resolver to use for the clients (optional): " -e -i 94.140.15.15 CLIENT_DNS_2
-			if [[ ${CLIENT_DNS_2} == "" ]]; then
-				CLIENT_DNS_2="${CLIENT_DNS_1}"
-			fi
-		fi
-	done
+	# Ask what kind of server is needed
+    echo "What kind of server do you need?"
+    echo "  1) Route all traffic (AllowedIPs: 0.0.0.0/0)"
+    echo "  2) Route subnet only (AllowedIPs: <server subnet, e.g. 192.168.2.0/24>)"
+    echo "  3) Route multiple subnets (AllowedIPs: <subnet1, e.g. 192.168.2.0/24>, <subnet2, e.g. 192.168.100.0/24>)"
+    until [[ $SERVER_ALLOWED_IPS_CHOICE =~ ^[1-3]$ ]]; do
+        read -rp "Select an option [1-3]: " SERVER_ALLOWED_IPS_CHOICE
+    done
+    case $SERVER_ALLOWED_IPS_CHOICE in
+        1)
+            SERVER_ALLOWED_IPS="0.0.0.0/0"
+            # Ask for DNS only if routing all traffic
+            until [[ ${CLIENT_DNS_1} =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
+                if [[ ${OS} == 'macos' ]]; then
+                    CLIENT_DNS_1='94.140.14.14'
+                    read -rp "First DNS resolver to use for the clients [default ${CLIENT_DNS_1}]: " -e USER_INPUT_CLIENT_DNS_1
+                    CLIENT_DNS_1=${USER_INPUT_CLIENT_DNS_1:-$CLIENT_DNS_1}
+                else
+                    read -rp "First DNS resolver to use for the clients: " -e -i 94.140.14.14 CLIENT_DNS_1
+                fi
+            done
+            until [[ ${CLIENT_DNS_2} =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
+                if [[ ${OS} == 'macos' ]]; then
+                    CLIENT_DNS_DEF_2='94.140.15.15'
+                    read -rp "Second DNS resolver to use for the clients (optional) [default ${CLIENT_DNS_DEF_2}]: " -e USER_INPUT_CLIENT_DNS_2
+                    CLIENT_DNS_2=${USER_INPUT_CLIENT_DNS_2:-$CLIENT_DNS_DEF_2}
+                else
+                    read -rp "Second DNS resolver to use for the clients (optional): " -e -i 94.140.15.15 CLIENT_DNS_2
+                    if [[ ${CLIENT_DNS_2} == "" ]]; then
+                        CLIENT_DNS_2="${CLIENT_DNS_1}"
+                    fi
+                fi
+            done
+            ;;
+        2)
+            SERVER_ALLOWED_IPS="${SERVER_WG_IPV4%.*}.0/${SERVER_WG_SUBNET}"
+            CLIENT_DNS_1=""
+            CLIENT_DNS_2=""
+            ;;
+        3)
+            read -rp "Enter comma-separated subnets (e.g. 192.168.2.0/24,192.168.100.0/24): " SERVER_ALLOWED_IPS
+            CLIENT_DNS_1=""
+            CLIENT_DNS_2=""
+            ;;
+    esac
 
 	echo ""
 	echo "Okay, that was all I needed. We are ready to setup your WireGuard server now."
@@ -264,7 +287,8 @@ SERVER_PORT=${SERVER_PORT}
 SERVER_PRIV_KEY=${SERVER_PRIV_KEY}
 SERVER_PUB_KEY=${SERVER_PUB_KEY}
 CLIENT_DNS_1=${CLIENT_DNS_1}
-CLIENT_DNS_2=${CLIENT_DNS_2}" > "$(pwd)/wireguard/${SERVER_WG_NIC}/params"
+CLIENT_DNS_2=${CLIENT_DNS_2}
+SERVER_ALLOWED_IPS=${SERVER_ALLOWED_IPS}" > "$(pwd)/wireguard/${SERVER_WG_NIC}/params"
 
     # Save WireGuard settings to the MikroTik
     cat > "$(pwd)/wireguard/${SERVER_WG_NIC}/mikrotik/${SERVER_WG_NIC}.rsc" <<EOF
@@ -444,16 +468,8 @@ function newClient() {
 		CLIENT_WG_IPV6=""
 	fi
 
-	# Asking for client's allowed IPs
-	until [[ ${ALLOWED_IPV4} =~ ^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\/(3[0-2]|[12]?[0-9]))?$ ]]; do
-		if [[ ${OS} == 'macos' ]]; then
-			ALLOWED_IPV4="0.0.0.0/0"
-			read -rp "Client's allowed IPv4 [default used ${ALLOWED_IPV4}]: " -e USER_INPUT_ALLOWED_IPV4
-			ALLOWED_IPV4=${USER_INPUT_ALLOWED_IPV4:-$ALLOWED_IPV4}
-		else
-			read -rp "Client's allowed IPv4: " -e -i "0.0.0.0/0" ALLOWED_IPV4
-		fi
-	done
+	# Set ALLOWED_IPV4 from SERVER_ALLOWED_IPS (from params)
+	ALLOWED_IPV4="$SERVER_ALLOWED_IPS"
 
 	# Only ask for IPv6 allowed IPs if enabled
 	if [[ "$SERVER_ENABLE_IPV6" == "yes" && -n "$SERVER_WG_IPV6" ]]; then
@@ -482,7 +498,8 @@ function newClient() {
 
     # Create client file and add the server as a peer
     if [[ "$SERVER_ENABLE_IPV6" == "yes" && -n "$CLIENT_WG_IPV6" ]]; then
-        echo "[Interface]
+        if [[ -n "$CLIENT_DNS_1" ]]; then
+            echo "[Interface]
 PrivateKey = ${CLIENT_PRIV_KEY}
 Address = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128
 DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
@@ -493,8 +510,21 @@ PresharedKey = ${CLIENT_PRE_SHARED_KEY}
 Endpoint = ${ENDPOINT}
 AllowedIPs = ${ALLOWED_IPV4},${ALLOWED_IPV6}
 PersistentKeepalive = 25" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
+        else
+            echo "[Interface]
+PrivateKey = ${CLIENT_PRIV_KEY}
+Address = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128
+
+[Peer]
+PublicKey = ${SERVER_PUB_KEY}
+PresharedKey = ${CLIENT_PRE_SHARED_KEY}
+Endpoint = ${ENDPOINT}
+AllowedIPs = ${ALLOWED_IPV4},${ALLOWED_IPV6}
+PersistentKeepalive = 25" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
+        fi
     else
-        echo "[Interface]
+        if [[ -n "$CLIENT_DNS_1" ]]; then
+            echo "[Interface]
 PrivateKey = ${CLIENT_PRIV_KEY}
 Address = ${CLIENT_WG_IPV4}/32
 DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
@@ -505,6 +535,18 @@ PresharedKey = ${CLIENT_PRE_SHARED_KEY}
 Endpoint = ${ENDPOINT}
 AllowedIPs = ${ALLOWED_IPV4}
 PersistentKeepalive = 25" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
+        else
+            echo "[Interface]
+PrivateKey = ${CLIENT_PRIV_KEY}
+Address = ${CLIENT_WG_IPV4}/32
+
+[Peer]
+PublicKey = ${SERVER_PUB_KEY}
+PresharedKey = ${CLIENT_PRE_SHARED_KEY}
+Endpoint = ${ENDPOINT}
+AllowedIPs = ${ALLOWED_IPV4}
+PersistentKeepalive = 25" >"${HOME_DIR}/${CLIENT_CONF_NAME}"
+        fi
     fi
 
     qrencode -t ansiutf8 -l L <"${HOME_DIR}/${CLIENT_CONF_NAME}"
@@ -570,22 +612,37 @@ function manageMenu() {
 
 #? List of existing configurations
 function listConfs() {
-	local directory
-	directory="$(pwd)/wireguard"
-
-	if [ -d "${directory}" ]; then
-		echo "List of existing configurations:"
-		i=1
-		for folder in "${directory}"/*/; do
-			local users count folder_name
-			users="${folder}/client/"
-			count=$(find "$users" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
-			folder_name=$(basename "${folder}")
-			echo "${i}. ${folder_name} [${count} user(s)]"
-			((i++))
-		done
-	fi
-	echo ""
+    local directory
+    directory="$(pwd)/wireguard"
+    SERVER_LIST=()
+    if [ -d "${directory}" ]; then
+        echo "List of existing configurations:"
+        i=1
+        for folder in "${directory}"/*/; do
+            local users count folder_name
+            users="${folder}/client/"
+            count=$(find "$users" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
+            folder_name=$(basename "${folder}")
+            echo "${i}. ${folder_name} [${count} user(s)]"
+            SERVER_LIST+=("${folder_name}")
+            ((i++))
+        done
+        if (( i > 1 )); then
+            while true; do
+                read -rp "Select a server by number or enter a new name: " SERVER_SELECTION
+                if [[ $SERVER_SELECTION =~ ^[0-9]+$ ]] && (( SERVER_SELECTION >= 1 && SERVER_SELECTION < i )); then
+                    SERVER_WG_NIC="${SERVER_LIST[$((SERVER_SELECTION-1))]}"
+                    break
+                elif [[ $SERVER_SELECTION =~ ^[a-zA-Z0-9_]+$ ]]; then
+                    SERVER_WG_NIC="$SERVER_SELECTION"
+                    break
+                else
+                    echo "Invalid selection. Enter a number from the list or a new server name."
+                fi
+            done
+        fi
+    fi
+    echo ""
 }
 
 echo ""
